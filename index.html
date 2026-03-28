@@ -439,7 +439,7 @@
       if (!supportedTypes.length) {
         signDataSupport.className = 'status error';
         signDataSupport.textContent = 'Current wallet does not advertise SignData support..' + JSON.stringify(wallet);
-        //signDataButton.disabled = true;
+        signDataButton.disabled = false;
         return;
       }
 
@@ -452,7 +452,7 @@
         signDataSupport.innerHTML = `Wallet supports SignData types: <strong>${escapeHtml(supportedTypes.join(', '))}</strong>. Current type <strong>${escapeHtml(selectedType)}</strong> is not supported.`;
       }
 
-      //signDataButton.disabled = !supportsSelectedType;
+      signDataButton.disabled = true;
     };
 
     const updatePublicKeyField = (wallet = tonConnectUI.wallet) => {
