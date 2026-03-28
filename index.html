@@ -6,6 +6,7 @@
 
   <!-- TON Connect UI -->
   <script src="https://unpkg.com/@tonconnect/ui@latest/dist/tonconnect-ui.min.js"></script>
+  <script src="https://unpkg.com/tweetnacl@1.0.3/nacl-fast.min.js"></script>
   <!-- TON Core library -->
   <script type="module">
     import * as TonCore from 'https://esm.sh/@ton/core';
@@ -93,6 +94,32 @@
       max-height: 300px;
       overflow-y: auto;
     }
+
+    .field-select,
+    .field-input,
+    .field-textarea {
+      width: 100%;
+      padding: 10px;
+      margin: 10px 0;
+      border: 1px solid #444;
+      border-radius: 5px;
+      background: #2A3441;
+      color: #FFF;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+
+    .field-textarea {
+      min-height: 90px;
+      resize: vertical;
+    }
+
+    .field-help {
+      color: #9FB3C8;
+      font-size: 12px;
+      margin-top: -4px;
+      margin-bottom: 8px;
+    }
   </style>
 </head>
 <body>
@@ -114,9 +141,57 @@
     
   </div>
 
+  <!-- Sign Data -->
+  <div class="section">
+    <h2>3. Sign data</h2>
+
+    <label for="signdata-type">Payload type</label>
+    <select id="signdata-type" class="field-select">
+      <option value="text">text</option>
+      <option value="binary">binary</option>
+      <option value="cell">cell</option>
+    </select>
+
+    <div id="signdata-support" class="status info">
+      Connect wallet to check SignData support.
+    </div>
+
+    <div id="signdata-text-form">
+      <label for="signdata-text">Text payload</label>
+      <textarea id="signdata-text" class="field-textarea">TON Connect signData demo</textarea>
+    </div>
+
+    <div id="signdata-binary-form" style="display: none;">
+      <label for="signdata-binary-source">Binary source text</label>
+      <textarea id="signdata-binary-source" class="field-textarea">TON Connect binary signData demo</textarea>
+      <div class="field-help">
+        The text above will be UTF-8 encoded and converted to base64 before signing.
+      </div>
+    </div>
+
+    <div id="signdata-cell-form" style="display: none;">
+      <label for="signdata-cell-schema">Cell schema</label>
+      <input id="signdata-cell-schema" class="field-input" value="ton-connect-demo-v1" />
+
+      <label for="signdata-cell-boc">Cell BOC (base64)</label>
+      <textarea id="signdata-cell-boc" class="field-textarea" placeholder="Paste te6cc... BOC"></textarea>
+      <button id="btn-generate-signdata-cell" type="button">Generate sample cell</button>
+    </div>
+
+    <button id="btn-sign-data" disabled>Sign data</button>
+    <label for="signdata-public-key">Signer public key (hex)</label>
+    <input id="signdata-public-key" class="field-input" placeholder="Auto-filled from connected wallet, or paste manually" />
+    <div class="field-help">
+      Verification uses this public key. If wallet does not expose public key, paste it manually.
+    </div>
+    <button id="btn-verify-sign-data" disabled>Verify last signature</button>
+    <div id="signdata-result"></div>
+    <div id="signdata-verify-result"></div>
+  </div>
+
   <!-- Contract Info -->
   <div class="section">
-    <h2>3. Smart contract deployment</h2>
+    <h2>4. Smart contract deployment</h2>
     <button id="btn-generate-contract">Generate Contract Info</button>
     <div id="contract-info"></div>
     <button id="btn-deploy-contract" disabled>Deploy Doge Contract</button>
@@ -125,7 +200,7 @@
 
   <!-- Transaction Log -->
   <div class="section">
-    <h2>4. Log</h2>
+    <h2>5. Log</h2>
     <button id="btn-clear-log">Clear Log</button>
     <div id="log"></div>
 
@@ -151,19 +226,17 @@
     const tonConnectUI = new TON_CONNECT_UI.TonConnectUI({
       manifestUrl: 'https://ton-connect.github.io/demo-dapp-with-react-ui/tonconnect-manifest.json',
       buttonRootId: 'ton-connect',
+      walletsListSource: '',
       walletsListConfiguration: {
         includeWallets: [
-          {
-            name: 'KC Wallet',
-            appName: 'kucoinwallet',
-            imageUrl: 'https://www.kucoin.com/favicon.ico',
-            aboutUrl: 'https://www.kucoin.com/web3',
-            platforms: ['chrome', 'ios', 'android', 'safari'],
-            jsBridgeKey: 'kcwallet'
-          }
         ]
       }
     });
+
+    setTimeout(() => {
+      const wallets = tonConnectUI.getWallets();
+      console.log(wallets,'wallets');
+    }, 10000);
 
     // Global variables for contract
     let contractData = null;
@@ -199,6 +272,392 @@
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
 
+    const signDataTypeSelect = document.getElementById('signdata-type');
+    const signDataTextForm = document.getElementById('signdata-text-form');
+    const signDataBinaryForm = document.getElementById('signdata-binary-form');
+    const signDataCellForm = document.getElementById('signdata-cell-form');
+    const signDataSupport = document.getElementById('signdata-support');
+    const signDataResult = document.getElementById('signdata-result');
+    const signDataButton = document.getElementById('btn-sign-data');
+    const signDataPublicKeyInput = document.getElementById('signdata-public-key');
+    const signDataVerifyButton = document.getElementById('btn-verify-sign-data');
+    const signDataVerifyResult = document.getElementById('signdata-verify-result');
+
+    let lastSignDataRequest = null;
+    let lastSignDataResponse = null;
+
+    const utf8ToBase64 = (value) => {
+      const bytes = new TextEncoder().encode(value);
+      let binary = '';
+      for (const byte of bytes) {
+        binary += String.fromCharCode(byte);
+      }
+      return btoa(binary);
+    };
+
+    const getSupportedSignDataTypes = (wallet = tonConnectUI.wallet) => {
+      const features = wallet?.device?.features;
+      if (!Array.isArray(features)) {
+        return [];
+      }
+
+      const signDataFeature = features.find((feature) =>
+        feature &&
+        typeof feature === 'object' &&
+        feature.name === 'SignData' &&
+        Array.isArray(feature.types)
+      );
+
+      return signDataFeature ? signDataFeature.types : [];
+    };
+
+    const normalizeBase64 = (value) => {
+      const base64 = String(value).replace(/-/g, '+').replace(/_/g, '/');
+      return base64.padEnd(base64.length + (4 - base64.length % 4) % 4, '=');
+    };
+
+    const utf8ToBytes = (value) => new TextEncoder().encode(value);
+
+    const base64ToBytes = (value) => {
+      const binary = atob(normalizeBase64(value));
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    };
+
+    const hexToBytes = (value) => {
+      const normalized = String(value).trim().replace(/^0x/i, '').toLowerCase();
+      if (!/^[0-9a-f]*$/.test(normalized)) {
+        throw new Error('Public key must be a hex string.');
+      }
+      if (normalized.length % 2 !== 0) {
+        throw new Error('Public key hex length must be even.');
+      }
+
+      const bytes = new Uint8Array(normalized.length / 2);
+      for (let i = 0; i < normalized.length; i += 2) {
+        bytes[i / 2] = Number.parseInt(normalized.slice(i, i + 2), 16);
+      }
+      return bytes;
+    };
+
+    const concatBytes = (...parts) => {
+      const totalLength = parts.reduce((acc, item) => acc + item.length, 0);
+      const result = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const item of parts) {
+        result.set(item, offset);
+        offset += item.length;
+      }
+      return result;
+    };
+
+    const int32ToBytesBE = (value) => {
+      const output = new Uint8Array(4);
+      new DataView(output.buffer).setInt32(0, value, false);
+      return output;
+    };
+
+    const uint32ToBytesBE = (value) => {
+      const output = new Uint8Array(4);
+      new DataView(output.buffer).setUint32(0, value >>> 0, false);
+      return output;
+    };
+
+    const uint64ToBytesBE = (value) => {
+      const output = new Uint8Array(8);
+      new DataView(output.buffer).setBigUint64(0, BigInt(value), false);
+      return output;
+    };
+
+    const crc32Table = (() => {
+      const table = new Uint32Array(256);
+      for (let i = 0; i < 256; i += 1) {
+        let c = i;
+        for (let j = 0; j < 8; j += 1) {
+          c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        }
+        table[i] = c >>> 0;
+      }
+      return table;
+    })();
+
+    const crc32 = (bytes) => {
+      let crc = 0xFFFFFFFF;
+      for (const byte of bytes) {
+        crc = (crc >>> 8) ^ crc32Table[(crc ^ byte) & 0xFF];
+      }
+      return (crc ^ 0xFFFFFFFF) >>> 0;
+    };
+
+    const encodeDomainDnsLike = (domain) => {
+      const parts = String(domain).split('.').reverse();
+      const result = [];
+      for (const part of parts) {
+        const bytes = utf8ToBytes(part);
+        for (const byte of bytes) {
+          result.push(byte);
+        }
+        result.push(0);
+      }
+      return new Uint8Array(result);
+    };
+
+    const bytesToHex = (bytes) =>
+      Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+
+    const createSampleSignDataCellBoc = () => {
+      const { beginCell } = ton;
+      return beginCell()
+        .storeUint(0x544f4e, 24)
+        .storeStringTail('TON Connect signData demo')
+        .endCell()
+        .toBoc()
+        .toString('base64');
+    };
+
+    const updateSignDataTypeForm = () => {
+      const selectedType = signDataTypeSelect.value;
+      signDataTextForm.style.display = selectedType === 'text' ? 'block' : 'none';
+      signDataBinaryForm.style.display = selectedType === 'binary' ? 'block' : 'none';
+      signDataCellForm.style.display = selectedType === 'cell' ? 'block' : 'none';
+    };
+
+    const updateSignDataSupportUi = (wallet = tonConnectUI.wallet) => {
+      if (!wallet) {
+        signDataSupport.className = 'status info';
+        signDataSupport.textContent = 'Connect wallet to check SignData support.';
+        signDataButton.disabled = true;
+        return;
+      }
+
+      const selectedType = signDataTypeSelect.value;
+      const supportedTypes = getSupportedSignDataTypes(wallet);
+
+      if (!supportedTypes.length) {
+        signDataSupport.className = 'status error';
+        signDataSupport.textContent = 'Current wallet does not advertise SignData support.';
+        signDataButton.disabled = true;
+        return;
+      }
+
+      const supportsSelectedType = supportedTypes.includes(selectedType);
+      signDataSupport.className = supportsSelectedType ? 'status success' : 'status error';
+
+      if (supportsSelectedType) {
+        signDataSupport.innerHTML = `Wallet supports SignData types: <strong>${escapeHtml(supportedTypes.join(', '))}</strong>.`;
+      } else {
+        signDataSupport.innerHTML = `Wallet supports SignData types: <strong>${escapeHtml(supportedTypes.join(', '))}</strong>. Current type <strong>${escapeHtml(selectedType)}</strong> is not supported.`;
+      }
+
+      signDataButton.disabled = !supportsSelectedType;
+    };
+
+    const updatePublicKeyField = (wallet = tonConnectUI.wallet) => {
+      signDataPublicKeyInput.value = wallet?.account?.publicKey || '';
+    };
+
+    const payloadMatchesRequest = (requestPayload, signedPayload) => {
+      if (!requestPayload || !signedPayload || requestPayload.type !== signedPayload.type) {
+        return false;
+      }
+
+      if ((requestPayload.network || '') !== (signedPayload.network || '')) {
+        return false;
+      }
+
+      if ((requestPayload.from || '') !== (signedPayload.from || '')) {
+        return false;
+      }
+
+      if (requestPayload.type === 'text') {
+        return requestPayload.text === signedPayload.text;
+      }
+
+      if (requestPayload.type === 'binary') {
+        return normalizeBase64(requestPayload.bytes) === normalizeBase64(signedPayload.bytes);
+      }
+
+      if (requestPayload.type === 'cell') {
+        return (
+          requestPayload.schema === signedPayload.schema &&
+          normalizeBase64(requestPayload.cell) === normalizeBase64(signedPayload.cell)
+        );
+      }
+
+      return false;
+    };
+
+    const createTextOrBinarySignDataHash = async (signedData, parsedAddress) => {
+      const payload = signedData.payload;
+      const domainBytes = utf8ToBytes(signedData.domain);
+      const payloadPrefix = utf8ToBytes(payload.type === 'text' ? 'txt' : 'bin');
+      const payloadBytes = payload.type === 'text'
+        ? utf8ToBytes(payload.text)
+        : base64ToBytes(payload.bytes);
+
+      const message = concatBytes(
+        new Uint8Array([0xFF, 0xFF]),
+        utf8ToBytes('ton-connect/sign-data/'),
+        int32ToBytesBE(parsedAddress.workChain),
+        new Uint8Array(parsedAddress.hash),
+        uint32ToBytesBE(domainBytes.length),
+        domainBytes,
+        uint64ToBytesBE(signedData.timestamp),
+        payloadPrefix,
+        uint32ToBytesBE(payloadBytes.length),
+        payloadBytes
+      );
+
+      const digest = await crypto.subtle.digest('SHA-256', message);
+      return new Uint8Array(digest);
+    };
+
+    const createCellSignDataHash = (signedData, parsedAddress) => {
+      const payload = signedData.payload;
+      const schemaHash = crc32(utf8ToBytes(payload.schema));
+      const domainDnsLike = encodeDomainDnsLike(signedData.domain);
+      const domainAsString = new TextDecoder().decode(domainDnsLike);
+
+      const message = ton.beginCell()
+        .storeUint(0x75569022, 32)
+        .storeUint(schemaHash, 32)
+        .storeUint(BigInt(signedData.timestamp), 64)
+        .storeAddress(parsedAddress)
+        .storeStringRefTail(domainAsString)
+        .storeRef(ton.Cell.fromBase64(payload.cell))
+        .endCell();
+
+      return new Uint8Array(message.hash());
+    };
+
+    const verifySignDataResponse = async (signedData, publicKeyHex, requestPayload = null) => {
+      if (!signedData) {
+        throw new Error('No signed data available for verification.');
+      }
+
+      if (!nacl?.sign?.detached?.verify) {
+        throw new Error('tweetnacl is not loaded.');
+      }
+
+      if (!crypto?.subtle) {
+        throw new Error('Web Crypto API is unavailable.');
+      }
+
+      const parsedAddress = ton.Address.parse(signedData.address);
+      const signatureBytes = base64ToBytes(signedData.signature);
+      if (signatureBytes.length !== 64) {
+        throw new Error('Signature must be 64 bytes in base64.');
+      }
+
+      const publicKeyBytes = hexToBytes(publicKeyHex);
+      if (publicKeyBytes.length !== 32) {
+        throw new Error('Public key must be 32 bytes (64 hex chars).');
+      }
+
+      if (tonConnectUI.account) {
+        const connectedAddress = ton.Address.parse(tonConnectUI.account.address);
+        if (!connectedAddress.equals(parsedAddress)) {
+          throw new Error('Signed address does not match connected wallet address.');
+        }
+      }
+
+      if (signedData.domain !== window.location.host) {
+        throw new Error(`Signed domain mismatch. Expected "${window.location.host}", got "${signedData.domain}".`);
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      if (signedData.timestamp < now - 15 * 60 || signedData.timestamp > now + 60) {
+        throw new Error(`Signed timestamp out of accepted range: ${signedData.timestamp}.`);
+      }
+
+      if (requestPayload && !payloadMatchesRequest(requestPayload, signedData.payload)) {
+        throw new Error('Signed payload does not match latest request payload.');
+      }
+
+      const hashToVerify = signedData.payload.type === 'cell'
+        ? createCellSignDataHash(signedData, parsedAddress)
+        : await createTextOrBinarySignDataHash(signedData, parsedAddress);
+
+      return {
+        isValid: nacl.sign.detached.verify(hashToVerify, signatureBytes, publicKeyBytes),
+        hashHex: bytesToHex(hashToVerify),
+        domain: signedData.domain,
+        timestamp: signedData.timestamp,
+        address: signedData.address,
+        type: signedData.payload.type
+      };
+    };
+
+    const renderVerifyResult = (result) => {
+      signDataVerifyResult.innerHTML = `
+        <div class="status ${result.isValid ? 'success' : 'error'}">
+          <strong>${result.isValid ? 'Signature verification passed' : 'Signature verification failed'}</strong>
+          <div class="code-output">${escapeHtml(JSON.stringify(result, null, 2))}</div>
+        </div>
+      `;
+      log(`SignData verify result: ${JSON.stringify(result)}`);
+    };
+
+    const buildSignDataPayload = () => {
+      const payloadType = signDataTypeSelect.value;
+      const basePayload = {
+        from: tonConnectUI.account.address,
+        network: tonConnectUI.account.chain
+      };
+
+      if (payloadType === 'text') {
+        const text = document.getElementById('signdata-text').value.trim();
+        if (!text) {
+          throw new Error('Text payload cannot be empty.');
+        }
+
+        return {
+          ...basePayload,
+          type: 'text',
+          text
+        };
+      }
+
+      if (payloadType === 'binary') {
+        const sourceText = document.getElementById('signdata-binary-source').value;
+        if (!sourceText.trim()) {
+          throw new Error('Binary source text cannot be empty.');
+        }
+
+        return {
+          ...basePayload,
+          type: 'binary',
+          bytes: utf8ToBase64(sourceText)
+        };
+      }
+
+      if (payloadType === 'cell') {
+        const schema = document.getElementById('signdata-cell-schema').value.trim();
+        let cell = document.getElementById('signdata-cell-boc').value.trim();
+
+        if (!schema) {
+          throw new Error('Cell schema cannot be empty.');
+        }
+
+        if (!cell) {
+          cell = createSampleSignDataCellBoc();
+          document.getElementById('signdata-cell-boc').value = cell;
+        }
+
+        return {
+          ...basePayload,
+          type: 'cell',
+          schema,
+          cell
+        };
+      }
+
+      throw new Error(`Unsupported SignData payload type: ${payloadType}`);
+    };
+
     // Ensure every connection request carries TON Proof payload.
     setTonProofConnectParameter();
 
@@ -225,6 +684,8 @@
           </div>
         `;
         deployButton.disabled = !contractData;
+        updateSignDataSupportUi(wallet);
+        updatePublicKeyField(wallet);
         log(`Wallet connected: ${wallet.account.address}`);
         log('TON Proof result:\n' + JSON.stringify(tonProofResult, null, 2));
         log('Wallet response:\n' + walletResponse);
@@ -235,6 +696,13 @@
           </div>
         `;
         deployButton.disabled = true;
+        updateSignDataSupportUi(null);
+        updatePublicKeyField(null);
+        signDataVerifyButton.disabled = true;
+        signDataResult.innerHTML = '';
+        signDataVerifyResult.innerHTML = '';
+        lastSignDataRequest = null;
+        lastSignDataResponse = null;
         log('Wallet disconnected');
         setTonProofConnectParameter();
       }
@@ -303,6 +771,116 @@
         log('Comment tx sent!\n' + JSON.stringify(result, null, 2));
       } catch (e) {
         log('Error: ' + e);
+      }
+    };
+
+    signDataTypeSelect.onchange = () => {
+      updateSignDataTypeForm();
+      updateSignDataSupportUi();
+    };
+
+    document.getElementById('btn-generate-signdata-cell').onclick = () => {
+      try {
+        const sampleCellBoc = createSampleSignDataCellBoc();
+        document.getElementById('signdata-cell-boc').value = sampleCellBoc;
+        log('Generated sample cell BOC for SignData.');
+      } catch (error) {
+        const message = error?.message || String(error);
+        log('Generate SignData cell failed: ' + message);
+      }
+    };
+
+    document.getElementById('btn-sign-data').onclick = async () => {
+      if (!tonConnectUI.account) {
+        alert('Please connect your wallet first!');
+        return;
+      }
+
+      try {
+        const payload = buildSignDataPayload();
+        lastSignDataRequest = payload;
+        lastSignDataResponse = null;
+        signDataVerifyButton.disabled = true;
+        signDataVerifyResult.innerHTML = '';
+
+        signDataResult.innerHTML = `
+          <div class="status info">
+            Waiting for wallet signature...
+          </div>
+        `;
+
+        log('SignData request:\n' + JSON.stringify(payload, null, 2));
+        const signedData = await tonConnectUI.signData(payload);
+
+        signDataResult.innerHTML = `
+          <div class="status success">
+            <strong>SignData succeeded</strong>
+            <strong>Request payload:</strong>
+            <div class="code-output">${escapeHtml(JSON.stringify(payload, null, 2))}</div>
+            <strong>Wallet response:</strong>
+            <div class="code-output">${escapeHtml(JSON.stringify(signedData, null, 2))}</div>
+          </div>
+        `;
+
+        log('SignData success:\n' + JSON.stringify(signedData, null, 2));
+
+        lastSignDataResponse = signedData;
+        signDataVerifyButton.disabled = false;
+
+        const publicKeyHex = signDataPublicKeyInput.value.trim();
+        if (publicKeyHex) {
+          try {
+            const verifyResult = await verifySignDataResponse(signedData, publicKeyHex, lastSignDataRequest);
+            renderVerifyResult(verifyResult);
+          } catch (verifyError) {
+            const verifyMessage = verifyError?.message || String(verifyError);
+            signDataVerifyResult.innerHTML = `
+              <div class="status error">
+                <strong>Auto verification failed:</strong><br>
+                ${escapeHtml(verifyMessage)}
+              </div>
+            `;
+            log('SignData auto verify failed: ' + verifyMessage);
+          }
+        }
+      } catch (error) {
+        const message = error?.message || String(error);
+        signDataResult.innerHTML = `
+          <div class="status error">
+            <strong>SignData failed:</strong><br>
+            ${escapeHtml(message)}
+          </div>
+        `;
+        log('SignData failed: ' + message);
+      }
+    };
+
+    document.getElementById('btn-verify-sign-data').onclick = async () => {
+      try {
+        if (!lastSignDataResponse) {
+          throw new Error('No signature found. Please sign data first.');
+        }
+
+        const publicKeyHex = signDataPublicKeyInput.value.trim();
+        if (!publicKeyHex) {
+          throw new Error('Public key is empty. Connect wallet or paste public key first.');
+        }
+
+        const verifyResult = await verifySignDataResponse(
+          lastSignDataResponse,
+          publicKeyHex,
+          lastSignDataRequest
+        );
+        renderVerifyResult(verifyResult);
+      } catch (error) {
+        const message = error?.message || String(error);
+        signDataVerifyResult.innerHTML = `
+          <div class="status error">
+            <strong>Verify failed:</strong><br>
+            ${escapeHtml(message)}
+          </div>
+        `;
+        log('SignData verify failed: ' + message);
       }
     };
 
@@ -471,6 +1049,10 @@
     document.getElementById('btn-clear-log').onclick = () => {
       document.getElementById('log').textContent = '';
     };
+
+    updateSignDataTypeForm();
+    updateSignDataSupportUi();
+    updatePublicKeyField();
 
     // Initial log message
     log('TON Connect examples initialized. Please connect your wallet to start.');
