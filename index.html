@@ -438,7 +438,7 @@
 
       if (!supportedTypes.length) {
         signDataSupport.className = 'status error';
-        signDataSupport.textContent = 'Current wallet does not advertise SignData support.';
+        signDataSupport.textContent = 'Current wallet does not advertise SignData support.' + JSON.stringify(wallet?.device?.features);
         signDataButton.disabled = true;
         return;
       }
