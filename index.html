@@ -120,6 +120,11 @@
       margin-top: -4px;
       margin-bottom: 8px;
     }
+
+    .stack-button {
+      display: block;
+      width: 100%;
+    }
   </style>
 </head>
 <body>
@@ -136,19 +141,29 @@
   <!-- Simple Transactions -->
   <div class="section">
     <h2>2. Simple transactions</h2>
-    <button id="btn-multi">Send 0.2 TON to self + 0.1 TON x2 to another address</button>
-    <button id="btn-comment">Send 0.2 TON with comment</button>
+    <label for="multi-target-address">Multi-message target address (for message #2 and #3)</label>
+    <input id="multi-target-address" class="field-input" placeholder="Default: connected wallet address" />
+    <label for="multi-amount-ton">Multi-message amount per message (TON)</label>
+    <input id="multi-amount-ton" class="field-input" value="0.000001" />
+    <button id="btn-multi" class="stack-button">Send Multi-Message Tx (1x self + 2x target)</button>
+
+    <label for="comment-target-address">Comment transaction target address</label>
+    <input id="comment-target-address" class="field-input" placeholder="Default: connected wallet address" />
+    <label for="comment-amount-ton">Comment transaction amount (TON)</label>
+    <input id="comment-amount-ton" class="field-input" value="0.000001" />
+    <button id="btn-comment" class="stack-button">Send Comment Tx (to target)</button>
+    <div id="simple-tx-result"></div>
 
     <h3>Single transaction with custom multiple messages</h3>
     <label for="custom-multi-messages">Messages (one per line: address,amount_in_TON)</label>
     <textarea
       id="custom-multi-messages"
       class="field-textarea"
-      placeholder="EQ... , 0.01&#10;UQ... , 0.02"
-    >EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c,0.01
-UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.02</textarea>
+      placeholder="EQ... , 0.000001&#10;UQ... , 0.000002"
+    >EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c,0.000001
+UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.000002</textarea>
     <div class="field-help">
-      Example: <code>EQ...,0.01</code>. Please provide at least 2 lines to form a multi-message transaction.
+      Example: <code>EQ...,0.000001</code>. Please provide at least 2 lines to form a multi-message transaction.
     </div>
     <button id="btn-custom-multi">Send Custom Multi-Message Transaction</button>
     <div id="custom-multi-result"></div>
@@ -235,9 +250,12 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.02</textarea>
   </div>
 
   <script>
+    const appBaseUrl = new URL('.', window.location.href).toString();
+    const manifestUrl = new URL('tonconnect-manifest.json', appBaseUrl).toString();
+
     // Initialize TON Connect UI
     const tonConnectUI = new TON_CONNECT_UI.TonConnectUI({
-      manifestUrl: 'https://ton-connect.github.io/demo-dapp-with-react-ui/tonconnect-manifest.json',
+      manifestUrl,
       buttonRootId: 'ton-connect',
       walletsListSource: '',
       walletsListConfiguration: {
@@ -261,6 +279,58 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.02</textarea>
       const timestamp = new Date().toLocaleTimeString();
       logElement.textContent += `[${timestamp}] ${msg}\n`;
       logElement.scrollTop = logElement.scrollHeight;
+    };
+
+    const ensureTonCoreReady = () => {
+      if (!window.ton || typeof ton.toNano !== 'function' || !ton.Address) {
+        throw new Error('TON core is still loading. Please retry in 1-2 seconds.');
+      }
+    };
+
+    const renderSimpleTxResult = (html) => {
+      document.getElementById('simple-tx-result').innerHTML = html;
+    };
+
+    const getAddressAmountInput = (addressInputId, amountInputId, fallbackAddress) => {
+      const rawTargetAddress = document.getElementById(addressInputId).value.trim();
+      const amountTonText = document.getElementById(amountInputId).value.trim();
+
+      if (!amountTonText) {
+        throw new Error('Amount is required.');
+      }
+
+      const targetAddress = rawTargetAddress || fallbackAddress;
+      if (!targetAddress) {
+        throw new Error('Target address is missing.');
+      }
+
+      ton.Address.parse(targetAddress);
+      const amountNanotons = ton.toNano(amountTonText).toString();
+      if (BigInt(amountNanotons) <= 0n) {
+        throw new Error('Amount must be greater than 0.');
+      }
+
+      return {
+        targetAddress,
+        amountTonText,
+        amountNanotons
+      };
+    };
+
+    const applySimpleTxDefaults = (wallet = tonConnectUI.wallet) => {
+      const defaultAddress = wallet?.account?.address || '';
+      if (!defaultAddress) {
+        return;
+      }
+
+      const multiAddressInput = document.getElementById('multi-target-address');
+      const commentAddressInput = document.getElementById('comment-target-address');
+      if (multiAddressInput && !multiAddressInput.value.trim()) {
+        multiAddressInput.value = defaultAddress;
+      }
+      if (commentAddressInput && !commentAddressInput.value.trim()) {
+        commentAddressInput.value = defaultAddress;
+      }
     };
 
     const createTonProofPayload = () =>
@@ -699,6 +769,7 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.02</textarea>
         deployButton.disabled = !contractData;
         updateSignDataSupportUi(wallet);
         updatePublicKeyField(wallet);
+        applySimpleTxDefaults(wallet);
         log(`Wallet connected: ${wallet.account.address}`);
         log('TON Proof result:\n' + JSON.stringify(tonProofResult, null, 2));
         log('Wallet response:\n' + walletResponse);
@@ -728,29 +799,47 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.02</textarea>
         return;
       }
 
-      const tx = {
-        validUntil: Math.floor(Date.now() / 1000) + 360,
-        messages: [
-          {
-            address: tonConnectUI.account.address,
-            amount: '200000000'                      // 0.2 TON (in nanotons)
-          },
-          {
-            address: 'EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c',
-            amount: '100000000'
-          },
-          {
-            address: 'UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ',
-            amount: '100000000'
-          }
-        ]
-      };
-
       try {
+        ensureTonCoreReady();
+        const selfAddress = tonConnectUI.account.address;
+        const { targetAddress, amountTonText, amountNanotons } = getAddressAmountInput(
+          'multi-target-address',
+          'multi-amount-ton',
+          tonConnectUI.account.address
+        );
+        const tx = {
+          validUntil: Math.floor(Date.now() / 1000) + 360,
+          messages: [
+            { address: selfAddress, amount: amountNanotons },
+            { address: targetAddress, amount: amountNanotons },
+            { address: targetAddress, amount: amountNanotons }
+          ]
+        };
+        renderSimpleTxResult(`
+          <div class="status info">
+            Sending multi-message transaction...
+            <div>Target: <code>${escapeHtml(targetAddress)}</code>; amount per message: <code>${escapeHtml(amountTonText)} TON</code></div>
+            <div class="code-output">${escapeHtml(JSON.stringify(tx, null, 2))}</div>
+          </div>
+        `);
+        log('Multi-message tx request:\n' + JSON.stringify(tx, null, 2));
         const result = await tonConnectUI.sendTransaction(tx);
-        log('Multi-message tx sent!\n' + JSON.stringify(result, null, 2));
+        renderSimpleTxResult(`
+          <div class="status success">
+            <strong>Multi-message transaction sent</strong>
+            <div class="code-output">${escapeHtml(JSON.stringify(result, null, 2))}</div>
+          </div>
+        `);
+        log('Multi-message tx sent:\n' + JSON.stringify(result, null, 2));
       } catch (e) {
-        log('Error: ' + e);
+        const message = e?.message || String(e);
+        renderSimpleTxResult(`
+          <div class="status error">
+            <strong>Multi-message transaction failed:</strong><br>
+            ${escapeHtml(message)}
+          </div>
+        `);
+        log('Multi-message tx failed: ' + message);
       }
     };
 
@@ -780,7 +869,7 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.02</textarea>
           throw new Error(`Line ${index + 1} amount is empty.`);
         }
 
-        const parsedAddress = ton.Address.parse(addressText);
+        ton.Address.parse(addressText);
         const amountNanotons = ton.toNano(amountTonText).toString();
 
         if (BigInt(amountNanotons) <= 0n) {
@@ -788,7 +877,7 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.02</textarea>
         }
 
         return {
-          address: parsedAddress.toString(),
+          address: addressText,
           amountTon: amountTonText,
           amount: amountNanotons
         };
@@ -805,6 +894,7 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.02</textarea>
       const rawText = document.getElementById('custom-multi-messages').value;
 
       try {
+        ensureTonCoreReady();
         const messages = parseCustomMultiMessages(rawText);
         const tx = {
           validUntil: Math.floor(Date.now() / 1000) + 600,
@@ -847,29 +937,53 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.02</textarea>
         return;
       }
 
-      const { beginCell } = ton;
-
-      const commentBody = beginCell()
-        .storeUint(0, 32)
-        .storeStringTail('Hello, TON!')
-        .endCell();
-
-      const tx = {
-        validUntil: Math.floor(Date.now() / 1000) + 360,
-        messages: [
-          {
-            address: tonConnectUI.account.address,
-            amount: '200000000',
-            payload: commentBody.toBoc().toString('base64')
-          }
-        ]
-      };
-
       try {
+        ensureTonCoreReady();
+        const { beginCell } = ton;
+        const { targetAddress, amountTonText, amountNanotons } = getAddressAmountInput(
+          'comment-target-address',
+          'comment-amount-ton',
+          tonConnectUI.account.address
+        );
+        const commentBody = beginCell()
+          .storeUint(0, 32)
+          .storeStringTail('Hello, TON!')
+          .endCell();
+        const tx = {
+          validUntil: Math.floor(Date.now() / 1000) + 360,
+          messages: [
+            {
+              address: targetAddress,
+              amount: amountNanotons,
+              payload: commentBody.toBoc().toString('base64')
+            }
+          ]
+        };
+        renderSimpleTxResult(`
+          <div class="status info">
+            Sending comment transaction...
+            <div>Target: <code>${escapeHtml(targetAddress)}</code>; amount: <code>${escapeHtml(amountTonText)} TON</code></div>
+            <div class="code-output">${escapeHtml(JSON.stringify(tx, null, 2))}</div>
+          </div>
+        `);
+        log('Comment tx request:\n' + JSON.stringify(tx, null, 2));
         const result = await tonConnectUI.sendTransaction(tx);
-        log('Comment tx sent!\n' + JSON.stringify(result, null, 2));
+        renderSimpleTxResult(`
+          <div class="status success">
+            <strong>Comment transaction sent</strong>
+            <div class="code-output">${escapeHtml(JSON.stringify(result, null, 2))}</div>
+          </div>
+        `);
+        log('Comment tx sent:\n' + JSON.stringify(result, null, 2));
       } catch (e) {
-        log('Error: ' + e);
+        const message = e?.message || String(e);
+        renderSimpleTxResult(`
+          <div class="status error">
+            <strong>Comment transaction failed:</strong><br>
+            ${escapeHtml(message)}
+          </div>
+        `);
+        log('Comment tx failed: ' + message);
       }
     };
 
@@ -1154,6 +1268,7 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.02</textarea>
     updatePublicKeyField();
 
     // Initial log message
+    log(`TON Connect manifest URL: ${manifestUrl}`);
     log('TON Connect examples initialized. Please connect your wallet to start.');
   </script>
 </body>
