@@ -141,11 +141,15 @@
   <!-- Simple Transactions -->
   <div class="section">
     <h2>2. Simple transactions</h2>
-    <label for="multi-target-address">Multi-message target address (for message #2 and #3)</label>
-    <input id="multi-target-address" class="field-input" placeholder="Default: connected wallet address" />
+    <label for="multi-address-1">Multi-message address #1</label>
+    <input id="multi-address-1" class="field-input" placeholder="Default: connected wallet address" />
+    <label for="multi-address-2">Multi-message address #2</label>
+    <input id="multi-address-2" class="field-input" placeholder="Default: connected wallet address" />
+    <label for="multi-address-3">Multi-message address #3</label>
+    <input id="multi-address-3" class="field-input" placeholder="Default: connected wallet address" />
     <label for="multi-amount-ton">Multi-message amount per message (TON)</label>
     <input id="multi-amount-ton" class="field-input" value="0.000001" />
-    <button id="btn-multi" class="stack-button">Send Multi-Message Tx (1x self + 2x target)</button>
+    <button id="btn-multi" class="stack-button">Send Multi-Message Tx (3 custom addresses)</button>
 
     <label for="comment-target-address">Comment transaction target address</label>
     <input id="comment-target-address" class="field-input" placeholder="Default: connected wallet address" />
@@ -291,25 +295,34 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.000002</textarea>
       document.getElementById('simple-tx-result').innerHTML = html;
     };
 
-    const getAddressAmountInput = (addressInputId, amountInputId, fallbackAddress) => {
+    const getAddressInput = (addressInputId, fallbackAddress, label = 'Target address') => {
       const rawTargetAddress = document.getElementById(addressInputId).value.trim();
-      const amountTonText = document.getElementById(amountInputId).value.trim();
+      const targetAddress = rawTargetAddress || fallbackAddress;
+      if (!targetAddress) {
+        throw new Error(`${label} is missing.`);
+      }
+      ton.Address.parse(targetAddress);
+      return targetAddress;
+    };
 
+    const getAmountInput = (amountInputId) => {
+      const amountTonText = document.getElementById(amountInputId).value.trim();
       if (!amountTonText) {
         throw new Error('Amount is required.');
       }
-
-      const targetAddress = rawTargetAddress || fallbackAddress;
-      if (!targetAddress) {
-        throw new Error('Target address is missing.');
-      }
-
-      ton.Address.parse(targetAddress);
       const amountNanotons = ton.toNano(amountTonText).toString();
       if (BigInt(amountNanotons) <= 0n) {
         throw new Error('Amount must be greater than 0.');
       }
+      return {
+        amountTonText,
+        amountNanotons
+      };
+    };
 
+    const getAddressAmountInput = (addressInputId, amountInputId, fallbackAddress, label = 'Target address') => {
+      const targetAddress = getAddressInput(addressInputId, fallbackAddress, label);
+      const { amountTonText, amountNanotons } = getAmountInput(amountInputId);
       return {
         targetAddress,
         amountTonText,
@@ -323,10 +336,18 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.000002</textarea>
         return;
       }
 
-      const multiAddressInput = document.getElementById('multi-target-address');
+      const multiAddressInput1 = document.getElementById('multi-address-1');
+      const multiAddressInput2 = document.getElementById('multi-address-2');
+      const multiAddressInput3 = document.getElementById('multi-address-3');
       const commentAddressInput = document.getElementById('comment-target-address');
-      if (multiAddressInput && !multiAddressInput.value.trim()) {
-        multiAddressInput.value = defaultAddress;
+      if (multiAddressInput1 && !multiAddressInput1.value.trim()) {
+        multiAddressInput1.value = defaultAddress;
+      }
+      if (multiAddressInput2 && !multiAddressInput2.value.trim()) {
+        multiAddressInput2.value = defaultAddress;
+      }
+      if (multiAddressInput3 && !multiAddressInput3.value.trim()) {
+        multiAddressInput3.value = defaultAddress;
       }
       if (commentAddressInput && !commentAddressInput.value.trim()) {
         commentAddressInput.value = defaultAddress;
@@ -801,24 +822,26 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.000002</textarea>
 
       try {
         ensureTonCoreReady();
-        const selfAddress = tonConnectUI.account.address;
-        const { targetAddress, amountTonText, amountNanotons } = getAddressAmountInput(
-          'multi-target-address',
-          'multi-amount-ton',
-          tonConnectUI.account.address
-        );
+        const fallbackAddress = tonConnectUI.account.address;
+        const message1Address = getAddressInput('multi-address-1', fallbackAddress, 'Message #1 address');
+        const message2Address = getAddressInput('multi-address-2', fallbackAddress, 'Message #2 address');
+        const message3Address = getAddressInput('multi-address-3', fallbackAddress, 'Message #3 address');
+        const { amountTonText, amountNanotons } = getAmountInput('multi-amount-ton');
         const tx = {
           validUntil: Math.floor(Date.now() / 1000) + 360,
           messages: [
-            { address: selfAddress, amount: amountNanotons },
-            { address: targetAddress, amount: amountNanotons },
-            { address: targetAddress, amount: amountNanotons }
+            { address: message1Address, amount: amountNanotons },
+            { address: message2Address, amount: amountNanotons },
+            { address: message3Address, amount: amountNanotons }
           ]
         };
         renderSimpleTxResult(`
           <div class="status info">
             Sending multi-message transaction...
-            <div>Target: <code>${escapeHtml(targetAddress)}</code>; amount per message: <code>${escapeHtml(amountTonText)} TON</code></div>
+            <div>Address #1: <code>${escapeHtml(message1Address)}</code></div>
+            <div>Address #2: <code>${escapeHtml(message2Address)}</code></div>
+            <div>Address #3: <code>${escapeHtml(message3Address)}</code></div>
+            <div>Amount per message: <code>${escapeHtml(amountTonText)} TON</code></div>
             <div class="code-output">${escapeHtml(JSON.stringify(tx, null, 2))}</div>
           </div>
         `);
@@ -943,7 +966,8 @@ UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.000002</textarea>
         const { targetAddress, amountTonText, amountNanotons } = getAddressAmountInput(
           'comment-target-address',
           'comment-amount-ton',
-          tonConnectUI.account.address
+          tonConnectUI.account.address,
+          'Comment target address'
         );
         const commentBody = beginCell()
           .storeUint(0, 32)
