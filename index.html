@@ -138,7 +138,20 @@
     <h2>2. Simple transactions</h2>
     <button id="btn-multi">Send 0.2 TON to self + 0.1 TON x2 to another address</button>
     <button id="btn-comment">Send 0.2 TON with comment</button>
-    
+
+    <h3>Single transaction with custom multiple messages</h3>
+    <label for="custom-multi-messages">Messages (one per line: address,amount_in_TON)</label>
+    <textarea
+      id="custom-multi-messages"
+      class="field-textarea"
+      placeholder="EQ... , 0.01&#10;UQ... , 0.02"
+    >EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c,0.01
+UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJKZ,0.02</textarea>
+    <div class="field-help">
+      Example: <code>EQ...,0.01</code>. Please provide at least 2 lines to form a multi-message transaction.
+    </div>
+    <button id="btn-custom-multi">Send Custom Multi-Message Transaction</button>
+    <div id="custom-multi-result"></div>
   </div>
 
   <!-- Sign Data -->
@@ -738,6 +751,92 @@
         log('Multi-message tx sent!\n' + JSON.stringify(result, null, 2));
       } catch (e) {
         log('Error: ' + e);
+      }
+    };
+
+    const parseCustomMultiMessages = (rawText) => {
+      const lines = String(rawText)
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+      if (lines.length < 2) {
+        throw new Error('Please provide at least 2 messages (2 lines).');
+      }
+
+      return lines.map((line, index) => {
+        const separatorIndex = line.lastIndexOf(',');
+        if (separatorIndex === -1) {
+          throw new Error(`Line ${index + 1} format error. Use: address,amount`);
+        }
+
+        const addressText = line.slice(0, separatorIndex).trim();
+        const amountTonText = line.slice(separatorIndex + 1).trim();
+
+        if (!addressText) {
+          throw new Error(`Line ${index + 1} address is empty.`);
+        }
+        if (!amountTonText) {
+          throw new Error(`Line ${index + 1} amount is empty.`);
+        }
+
+        const parsedAddress = ton.Address.parse(addressText);
+        const amountNanotons = ton.toNano(amountTonText).toString();
+
+        if (BigInt(amountNanotons) <= 0n) {
+          throw new Error(`Line ${index + 1} amount must be greater than 0.`);
+        }
+
+        return {
+          address: parsedAddress.toString(),
+          amountTon: amountTonText,
+          amount: amountNanotons
+        };
+      });
+    };
+
+    document.getElementById('btn-custom-multi').onclick = async () => {
+      if (!tonConnectUI.account) {
+        alert('Please connect your wallet first!');
+        return;
+      }
+
+      const resultDiv = document.getElementById('custom-multi-result');
+      const rawText = document.getElementById('custom-multi-messages').value;
+
+      try {
+        const messages = parseCustomMultiMessages(rawText);
+        const tx = {
+          validUntil: Math.floor(Date.now() / 1000) + 600,
+          messages: messages.map(({ address, amount }) => ({ address, amount }))
+        };
+
+        resultDiv.innerHTML = `
+          <div class="status info">
+            Sending custom multi-message transaction...
+            <div class="code-output">${escapeHtml(JSON.stringify(tx, null, 2))}</div>
+          </div>
+        `;
+
+        log('Custom multi-message tx request:\n' + JSON.stringify(tx, null, 2));
+        const result = await tonConnectUI.sendTransaction(tx);
+
+        resultDiv.innerHTML = `
+          <div class="status success">
+            <strong>Custom multi-message transaction sent</strong>
+            <div class="code-output">${escapeHtml(JSON.stringify(result, null, 2))}</div>
+          </div>
+        `;
+        log('Custom multi-message tx sent:\n' + JSON.stringify(result, null, 2));
+      } catch (error) {
+        const message = error?.message || String(error);
+        resultDiv.innerHTML = `
+          <div class="status error">
+            <strong>Custom multi-message transaction failed:</strong><br>
+            ${escapeHtml(message)}
+          </div>
+        `;
+        log('Custom multi-message tx failed: ' + message);
       }
     };
 
